@@ -1,0 +1,74 @@
+services:
+  emby:
+    image: emby/embyserver
+    container_name: embyserver
+    runtime: nvidia
+    network_mode: host
+    environment:
+      - UID=1000
+      - GID=1000
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - TZ=America/New_York
+      - GIDLIST=1000,999
+    volumes:
+      - ./config:/config
+      - ./custom-images:/custom-images
+      - ./scripts:/scripts
+      - /mnt/nas/moms-shows:/moms-tv-shows
+      - /mnt/nas/moms-shows-buffer:/moms-tv-shows-buffer
+      - /mnt/nas/moms-movies:/moms-movies
+      - /mnt/nas/moms-movies-buffer:/moms-movies-buffer
+      - /mnt/nas/films:/films
+      - /mnt/nas/shows:/tv-shows
+      - /mnt/nas/animation:/tv-animation
+      - /mnt/nas/anime:/tv-anime
+      - /mnt/nas/music:/music
+      - /mnt/nas/meditation:/meditation
+      - /mnt/nas/amandas-shows:/amandas-tv-shows
+      - /mnt/nas/amandas-movies:/amandas-movies
+      - /mnt/nas/amandas-movies-buffer:/amandas-movies-buffer
+    devices:
+      - /dev/dri:/dev/dri
+    restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    entrypoint: /bin/sh -c "/scripts/copy_images.sh && /scripts/replace_images.sh && /init"
+
+  monitor:
+    image: alpine:latest
+    container_name: monitor_plugins
+    volumes:
+      - ./config:/config
+      - ./custom-images:/custom-images
+      - ./scripts:/scripts
+      - /home/john/docker-apps/emby/config/cache:/cache
+    entrypoint: /bin/sh -c "apk add --no-cache inotify-tools && /scripts/monitor_plugins.sh"
+    depends_on:
+      - emby
+
+
+
+
+      services:
+  emby:
+    image: emby/embyserver:latest
+    container_name: embyserver
+    runtime: nvidia
+    network_mode: host
+    environment:
+      - UID=1000
+      - GID=1000
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - TZ=America/New_York
+      - GIDLIST=1000,999
+    volumes:
+      - ./config:/config
+      - /mnt/nas:/media
+      - /mnt/nasmom:/media-mom
+    devices:
+      - /dev/dri:/dev/dri
+    restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
