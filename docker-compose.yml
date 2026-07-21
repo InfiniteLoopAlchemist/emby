@@ -24,12 +24,3 @@ services:
       com.centurylinklabs.watchtower.enable: "true"
     entrypoint: /bin/sh -c "rm -rf /config/cache/images/* && /scripts/copy_images.sh && /scripts/replace_images.sh && /init"
 
-  monitor:
-    image: alpine:latest
-    container_name: monitor_plugins
-    volumes:
-      - ./config:/config
-      - ./custom-images:/custom-images
-      - ./scripts:/scripts
-      - /home/john/
-
