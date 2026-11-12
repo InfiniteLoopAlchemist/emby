@@ -1,84 +1,196 @@
 #!/bin/sh
+# Puts the custom black cover frames into every folder the Emby Cover Art
+# plugin reads its frames from.
+#
+#   copy_images.sh          apply the black frames
+#   copy_images.sh --check  change nothing, report the first problem:
+#                             exit 0   everything is black
+#                             exit 10  a frame has the plugin's own (blue) art
+#                             exit 11  a folder or master is not in place yet
+#
+# The plugin keeps one cache folder per plugin version and renames its frame
+# folders between versions (4.1.30 moved from MetroCase to
+# skia-frames-v2-MetroCase, which is how the blue frames came back in
+# October 2026). So nothing here names a folder outright, it goes by the end
+# of the folder name:
+#   *SeriesMetroCase/   every png in it is the Series frame
+#   *MetroCase/         one png per frame type (BD.png, Series.png, ...)
+#   *case/              copies the plugin derives from the above, cleared
+#   resources/mframe_*  tinted variants of resources/mframe.png
+#
+# It also prepares the cache folder of the installed plugin version before the
+# plugin has made it, so a plugin update never gets to draw a blue frame.
+#
+# reapply_images_cron.sh runs the --check form every minute and applies on a
+# problem, so the rules live here only.
 
 SOURCE_FOLDER="${SOURCE_FOLDER:-"../custom-images"}"
 BASE_DESTINATION_FOLDER="${BASE_DESTINATION_FOLDER:-"../config/cache/coverart"}"
+PLUGIN_DLL="${PLUGIN_DLL:-"../config/plugins/CoverArt.dll"}"
 
-# Debugging: Print the source and destination paths
-echo "Source folder: $SOURCE_FOLDER"
-echo "Base destination folder: $BASE_DESTINATION_FOLDER"
+CHECK=0
+[ "$1" = "--check" ] && CHECK=1
 
-# Check if source folder exists
 if [ ! -d "$SOURCE_FOLDER" ]; then
-  echo "Error: Source folder does not exist."
+  echo "Error: Source folder does not exist: $SOURCE_FOLDER"
   exit 1
 fi
-
-# List the contents of the source folder
-echo "Contents of the source folder:"
-ls -l "$SOURCE_FOLDER"
-
-# Check if base destination folder exists
+if [ ! -f "$SOURCE_FOLDER/Series.png" ]; then
+  echo "Error: no Series.png in $SOURCE_FOLDER"
+  exit 1
+fi
 if [ ! -d "$BASE_DESTINATION_FOLDER" ]; then
-  echo "Error: Base destination folder does not exist."
+  echo "Error: Base destination folder does not exist: $BASE_DESTINATION_FOLDER"
   exit 1
 fi
 
-# Find the correct subdirectory dynamically, excluding the base directory itself
-DESTINATION_FOLDER=$(find "$BASE_DESTINATION_FOLDER" -mindepth 1 -maxdepth 1 -type d)
+OWNER=$(stat -c '%u:%g' "$BASE_DESTINATION_FOLDER" 2>/dev/null)
+WRONG=""
+MISSING=""
 
-# Debugging: Print the destination folder
-echo "Destination folders found:"
-echo "$DESTINATION_FOLDER"
+note_wrong() { [ -n "$WRONG" ] || WRONG="$1"; }
+note_missing() { [ -n "$MISSING" ] || MISSING="$1"; }
 
-# Process each found destination folder
-for folder in $DESTINATION_FOLDER; do
-  CASE_FOLDER="$folder/case"
-  METROCASE_FOLDER="$folder/MetroCase"
+# Version folders, oldest first.
+version_dirs() {
+  for v in "$BASE_DESTINATION_FOLDER"/*/; do
+    [ -d "$v" ] && basename "$v"
+  done | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n
+}
 
-  # Create the case folder if it doesn't exist
-  if [ ! -d "$CASE_FOLDER" ]; then
-    echo "Case folder not found, creating: $CASE_FOLDER"
-    mkdir -p "$CASE_FOLDER"
-  fi
+# The version of the plugin file on disk. After an update this is the NEXT
+# version Emby will load, its cache folder does not exist yet.
+installed_version() {
+  [ -f "$PLUGIN_DLL" ] || return 0
+  tr -d '\000' < "$PLUGIN_DLL" 2>/dev/null \
+    | grep -a -o 'Assembly Version[0-9][0-9.]*' \
+    | head -n1 | sed 's/Assembly Version//'
+}
 
-  # Create the MetroCase folder if it doesn't exist
-  if [ ! -d "$METROCASE_FOLDER" ]; then
-    echo "MetroCase folder not found, creating: $METROCASE_FOLDER"
-    mkdir -p "$METROCASE_FOLDER"
-  fi
-
-  # Clear the case folder
-  echo "Clearing case folder: $CASE_FOLDER"
-  rm -rf "${CASE_FOLDER:?}"/*
-
-  # Copy files to MetroCase folder
-  echo "Copying files to MetroCase folder: $METROCASE_FOLDER"
-  cp -r "${SOURCE_FOLDER:?}"/* "${METROCASE_FOLDER:?}"
-
-  # List the contents of the MetroCase folder after copying
-  echo "Contents of the MetroCase folder after copying:"
-  ls -l "$METROCASE_FOLDER"
-
-  # Overwrite all mframe_* images in resources with the black mframe.png
-  RESOURCES_DIR="$folder/resources"
-  if [ -d "$RESOURCES_DIR" ]; then
-    for img in "$RESOURCES_DIR"/mframe_*; do
-      if [ -f "$RESOURCES_DIR/mframe.png" ]; then
-        echo "Overwriting $img with black mframe.png"
-        cp "$RESOURCES_DIR/mframe.png" "$img"
+# Newest OTHER version folder that has frame folders, used as the layout for
+# the installed version ($1). The installed version's own folder is left out
+# because the plugin fills it in bit by bit, so it can be incomplete.
+template_dir() {
+  for v in $(version_dirs | sed '1!G;h;$!d'); do
+    [ "$v" = "$1" ] && continue
+    for d in "$BASE_DESTINATION_FOLDER/$v"/*MetroCase; do
+      if [ -d "$d" ]; then
+        echo "$BASE_DESTINATION_FOLDER/$v"
+        return 0
       fi
     done
-  fi
+  done
+}
 
-  # Overwrite each hashed Series file in SeriesMetroCase with custom Series.png
-  SMC_DIR="$folder/SeriesMetroCase"
-  if [ -d "$SMC_DIR" ]; then
-    for sfile in "$SMC_DIR"/*.png; do
-      if [ -f "${SOURCE_FOLDER}/Series.png" ]; then
-        echo "Overwriting $sfile with custom Series.png (preserving filename)"
-        cp "${SOURCE_FOLDER}/Series.png" "$sfile"
+make_dir() {
+  mkdir -p "$1" || return 1
+  [ -n "$OWNER" ] && chown "$OWNER" "$1" 2>/dev/null
+  return 0
+}
+
+# Give the installed version's folder the same frame folders as the template.
+seed_installed_version() {
+  ver=$(installed_version)
+  [ -n "$ver" ] || return 0
+  tpl=$(template_dir "$ver")
+  [ -n "$tpl" ] || return 0
+  target="$BASE_DESTINATION_FOLDER/$ver"
+
+  for d in "$tpl"/*MetroCase; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    if [ ! -d "$target/$name" ]; then
+      if [ "$CHECK" = 1 ]; then
+        note_missing "$target/$name"
+        continue
       fi
-    done
-  fi
+      echo "Preparing $target/$name"
+      [ -d "$target" ] || make_dir "$target" || continue
+      make_dir "$target/$name" || continue
+    fi
+    case "$name" in
+      *SeriesMetroCase)
+        # Same file names as the template, the plugin looks them up by name.
+        for f in "$d"/*.png; do
+          [ -f "$f" ] || continue
+          t="$target/$name/$(basename "$f")"
+          [ -f "$t" ] && continue
+          if [ "$CHECK" = 1 ]; then
+            note_missing "$t"
+          else
+            cp "$SOURCE_FOLDER/Series.png" "$t"
+          fi
+        done
+        ;;
+    esac
+  done
+}
 
+apply_series_dir() {
+  for f in "$1"/*.png; do
+    [ -f "$f" ] || continue
+    cmp -s "$SOURCE_FOLDER/Series.png" "$f" && continue
+    if [ "$CHECK" = 1 ]; then
+      note_wrong "$f"
+    else
+      cp "$SOURCE_FOLDER/Series.png" "$f"
+    fi
+  done
+}
+
+apply_frame_dir() {
+  for img in "$SOURCE_FOLDER"/*.png; do
+    [ -f "$img" ] || continue
+    t="$1/$(basename "$img")"
+    cmp -s "$img" "$t" && continue
+    if [ "$CHECK" = 1 ]; then
+      if [ -f "$t" ]; then note_wrong "$t"; else note_missing "$t"; fi
+    else
+      cp "$img" "$t"
+    fi
+  done
+}
+
+apply_resources_dir() {
+  [ -f "$1/mframe.png" ] || return 0
+  for img in "$1"/mframe_*; do
+    [ -f "$img" ] || continue
+    cmp -s "$1/mframe.png" "$img" && continue
+    if [ "$CHECK" = 1 ]; then
+      note_wrong "$img"
+    else
+      cp "$1/mframe.png" "$img"
+    fi
+  done
+}
+
+seed_installed_version
+
+for v in $(version_dirs); do
+  folder="$BASE_DESTINATION_FOLDER/$v"
+  for d in "$folder"/*; do
+    [ -d "$d" ] || continue
+    case "$(basename "$d")" in
+      *SeriesMetroCase) apply_series_dir "$d" ;;
+      *MetroCase) apply_frame_dir "$d" ;;
+      *case) [ "$CHECK" = 1 ] || rm -rf "${d:?}"/* ;;
+      resources) apply_resources_dir "$d" ;;
+    esac
+  done
 done
+
+if [ "$CHECK" = 1 ]; then
+  if [ -n "$WRONG" ]; then
+    echo "wrong frame: $WRONG"
+    exit 10
+  fi
+  if [ -n "$MISSING" ]; then
+    echo "not in place: $MISSING"
+    exit 11
+  fi
+  echo "ok"
+  exit 0
+fi
+
+echo "Black cover frames applied in: $(version_dirs | tr '\n' ' ')"
+exit 0
