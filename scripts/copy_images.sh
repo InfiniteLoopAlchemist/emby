@@ -5,7 +5,8 @@
 #   copy_images.sh          apply the black frames
 #   copy_images.sh --check  change nothing, report the first problem:
 #                             exit 0   everything is black
-#                             exit 10  a frame has the plugin's own (blue) art
+#                             exit 10  a frame has the plugin's own (blue) art,
+#                                      or a font file is the plugin's own font
 #                             exit 11  a folder or master is not in place yet
 #
 # The plugin keeps one cache folder per plugin version and renames its frame
@@ -17,6 +18,9 @@
 #   *MetroCase/         one png per frame type (BD.png, Series.png, ...)
 #   *case/              copies the plugin derives from the above, cleared
 #   resources/mframe_*  tinted variants of resources/mframe.png
+#   fonts/*.ttf         the font the plugin writes "Season 18" with, replaced
+#                       by custom-images/cover-font.ttf (Fatbasterd Pixel with
+#                       small letters drawn as capitals)
 #
 # It also prepares the cache folder of the installed plugin version before the
 # plugin has made it, so a plugin update never gets to draw a blue frame.
@@ -27,6 +31,7 @@
 SOURCE_FOLDER="${SOURCE_FOLDER:-"../custom-images"}"
 BASE_DESTINATION_FOLDER="${BASE_DESTINATION_FOLDER:-"../config/cache/coverart"}"
 PLUGIN_DLL="${PLUGIN_DLL:-"../config/plugins/CoverArt.dll"}"
+COVER_FONT="$SOURCE_FOLDER/cover-font.ttf"
 
 CHECK=0
 [ "$1" = "--check" ] && CHECK=1
@@ -124,6 +129,34 @@ seed_installed_version() {
         ;;
     esac
   done
+
+  # Same font file names as the template, each one the pixel font.
+  [ -f "$COVER_FONT" ] || return 0
+  for f in "$tpl"/fonts/*.ttf; do
+    [ -f "$f" ] || continue
+    t="$target/fonts/$(basename "$f")"
+    [ -f "$t" ] && continue
+    if [ "$CHECK" = 1 ]; then
+      note_missing "$t"
+      continue
+    fi
+    [ -d "$target" ] || make_dir "$target" || continue
+    [ -d "$target/fonts" ] || make_dir "$target/fonts" || continue
+    cp "$COVER_FONT" "$t"
+  done
+}
+
+apply_fonts_dir() {
+  [ -f "$COVER_FONT" ] || return 0
+  for f in "$1"/*.ttf; do
+    [ -f "$f" ] || continue
+    cmp -s "$COVER_FONT" "$f" && continue
+    if [ "$CHECK" = 1 ]; then
+      note_wrong "$f"
+    else
+      cp "$COVER_FONT" "$f"
+    fi
+  done
 }
 
 apply_series_dir() {
@@ -175,6 +208,7 @@ for v in $(version_dirs); do
       *MetroCase) apply_frame_dir "$d" ;;
       *case) [ "$CHECK" = 1 ] || rm -rf "${d:?}"/* ;;
       resources) apply_resources_dir "$d" ;;
+      fonts) apply_fonts_dir "$d" ;;
     esac
   done
 done
